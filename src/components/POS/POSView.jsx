@@ -9,8 +9,9 @@ const POSView = ({ productos, perfil }) => {
   const [montoPagar, setMontoPagar] = useState('');
   const [metodoPago, setMetodoPago] = useState('Efectivo');
   const [pagosTemporales, setPagosTemporales] = useState([]);
+  
+  const [ticketImprimir, setTicketImprimir] = useState(null);
 
-  // 1. CARGA Y SINCRONIZACIÓN EN TIEMPO REAL
   const cargarPedidos = async () => {
     const { data } = await supabase.from('pedidos').select('*');
     if (data) setPedidosEnNube(data);
@@ -24,7 +25,6 @@ const POSView = ({ productos, perfil }) => {
     return () => supabase.removeChannel(canal);
   }, []);
 
-  // --- LÓGICA DE NEGOCIO ---
   const pedidoDeMesaActual = pedidosEnNube.find(p => p.mesa_nro === mesaActiva) || { items: [], total: 0 };
 
   const agregarAlPedido = async (p) => {
@@ -64,7 +64,6 @@ const POSView = ({ productos, perfil }) => {
     }
   };
 
-  // --- LÓGICA DE COBRO ---
   const yaPagado = pagosTemporales.reduce((a, b) => a + b.monto, 0);
   const saldoRestante = (pedidoDeMesaActual.total - yaPagado).toFixed(2);
 
@@ -75,7 +74,6 @@ const POSView = ({ productos, perfil }) => {
     setMontoPagar('');
   };
 
-  // FUNCIÓN CORREGIDA PARA REPORTE Y LIMPIEZA INMEDIATA
   const cerrarMesaFinal = async () => {
     if (parseFloat(saldoRestante) > 0) {
       return alert(`Falta cobrar S/ ${saldoRestante}`);
@@ -86,26 +84,37 @@ const POSView = ({ productos, perfil }) => {
     const nuevaVenta = {
       mesa_nro: mesaActiva,
       mesero_nombre: perfil.nombre,
-      total: montoFinal, // Enviamos el número limpio
+      total: montoFinal,
       metodos_pago: { 
         metodo: pagosTemporales[0]?.metodo || 'Efectivo', 
         detalle: pagosTemporales 
       }
     };
 
+    setTicketImprimir({
+      mesa: mesaActiva,
+      mesero: perfil.nombre,
+      items: pedidoDeMesaActual.items,
+      total: montoFinal,
+      pago: pagosTemporales[0]?.metodo || 'Efectivo',
+      fecha: new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', hour12: true })
+    });
+
     const { error: errorVenta } = await supabase.from('ventas').insert([nuevaVenta]);
 
     if (!errorVenta) {
-      // Limpieza visual inmediata
-      setPedidosEnNube(prev => prev.filter(p => p.mesa_nro !== mesaActiva));
-      
-      // Borramos de la base de datos
-      await supabase.from('pedidos').delete().eq('mesa_nro', mesaActiva);
-      
-      setPagosTemporales([]);
-      setMostrarPago(false);
-      setMontoPagar('');
-      alert("✅ Venta registrada y mesa liberada");
+      setTimeout(() => {
+        window.print();
+        
+        setPedidosEnNube(prev => prev.filter(p => p.mesa_nro !== mesaActiva));
+        supabase.from('pedidos').delete().eq('mesa_nro', mesaActiva).then(() => {
+          setPagosTemporales([]);
+          setMostrarPago(false);
+          setMontoPagar('');
+          setTicketImprimir(null);
+          alert("✅ Venta registrada y mesa liberada");
+        });
+      }, 500);
     } else {
       alert("Error al guardar venta: " + errorVenta.message);
     }
@@ -115,8 +124,77 @@ const POSView = ({ productos, perfil }) => {
 
   return (
     <div className="flex-1 flex flex-col md:flex-row overflow-hidden animate-in fade-in duration-500">
-      <div className="flex-1 flex flex-col border-r border-slate-200">
-        <div className="bg-slate-900 p-2 flex gap-2 overflow-x-auto no-print">
+      
+      {/* --- ESTILOS DE IMPRESIÓN MEJORADOS --- */}
+      <style>{`
+        @media print {
+          .no-print { display: none !important; }
+          .ticket-visual { 
+            display: block !important; 
+            width: 100% !important; 
+            margin: 0 !important; 
+            padding: 20px !important;
+            font-family: sans-serif !important;
+            color: black !important;
+            text-align: center !important;
+          }
+          body { background: white !important; padding: 0 !important; margin: 0 !important; }
+          @page { margin: 0; }
+        }
+        .ticket-visual { display: none; }
+      `}</style>
+
+      {/* --- DISEÑO DEL TICKET EQUILIBRADO --- */}
+      {ticketImprimir && (
+        <div className="ticket-visual fixed inset-0 bg-white z-[9999]">
+          <div className="border-b-4 border-black pb-4 mb-4">
+            <h2 className="text-4xl font-black uppercase tracking-tighter leading-tight">Restaurante Chelita</h2>
+            <p className="text-base font-bold italic mt-1 px-4">
+              "Donde el gusto está en la sazón y el cliente tiene la razón"
+            </p>
+          </div>
+
+          <div className="text-xl space-y-1 mb-6 border-b border-dashed border-black pb-4 uppercase font-bold">
+            <p className="text-2xl">Mesa: #{ticketImprimir.mesa}</p>
+            <p className="text-sm">Mesero: {ticketImprimir.mesero}</p>
+            <p className="opacity-60 text-xs font-normal italic">{new Date().toLocaleDateString()} - {ticketImprimir.fecha}</p>
+          </div>
+
+          <table className="w-full text-lg mb-6">
+            <thead>
+              <tr className="border-b-2 border-black text-left uppercase text-sm font-black">
+                <th className="pb-2">Descripción</th>
+                <th className="text-right pb-2">S/</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-dashed divide-black/30">
+              {ticketImprimir.items.map((item, i) => (
+                <tr key={i}>
+                  <td className="py-2 uppercase text-left font-bold text-base leading-tight">{item.nombre}</td>
+                  <td className="text-right font-black text-lg">S/ {parseFloat(item.precio).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="border-t-4 border-black pt-4 text-right">
+            <p className="text-xs uppercase font-black opacity-50 mb-1 italic">Pago: {ticketImprimir.pago}</p>
+            <div className="flex justify-end items-end gap-3">
+               <span className="text-2xl font-bold mb-1">TOTAL</span>
+               <span className="text-6xl font-black tracking-tighter">S/ {ticketImprimir.total.toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div className="mt-12 border-t border-black pt-4">
+            <p className="text-2xl font-black uppercase tracking-[0.1em]">¡Vuelva pronto!</p>
+            <p className="text-xs mt-2 opacity-60 font-bold uppercase tracking-widest">Trujillo - La Libertad</p>
+          </div>
+        </div>
+      )}
+
+      {/* --- CONTENIDO POS --- */}
+      <div className="flex-1 flex flex-col border-r border-slate-200 no-print">
+        <div className="bg-slate-900 p-2 flex gap-2 overflow-x-auto">
           {['1','2','3','4','5','7','8','9','10','11','12','13','14','15','16','17','18'].map(m => {
             const tienePedido = pedidosEnNube.some(p => p.mesa_nro === m);
             return (
@@ -154,7 +232,7 @@ const POSView = ({ productos, perfil }) => {
         </main>
       </div>
 
-      <aside className="w-full md:w-96 bg-white flex flex-col shadow-2xl z-20 border-l border-slate-100">
+      <aside className="w-full md:w-96 bg-white flex flex-col shadow-2xl z-20 border-l border-slate-100 no-print">
         <div className="p-5 border-b bg-orange-50 flex justify-between items-center">
           <div className="flex flex-col">
             <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest leading-none">Mesa</span>
@@ -193,9 +271,8 @@ const POSView = ({ productos, perfil }) => {
         </div>
       </aside>
 
-      {/* MODAL DE COBRO DINÁMICO */}
       {mostrarPago && (
-        <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-[100] flex items-center justify-center p-4 no-print">
           <div className="bg-white p-10 rounded-[3.5rem] max-w-md w-full shadow-2xl animate-in zoom-in-95">
             <h2 className="text-4xl font-black mb-1 italic tracking-tighter uppercase">Cobrar</h2>
             <div className="flex justify-between items-center mb-8 border-b pb-4">
